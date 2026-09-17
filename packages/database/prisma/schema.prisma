@@ -1,0 +1,434 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum NotificationStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  SENT
+  DELIVERED
+  RETRY_SCHEDULED
+  FAILED
+  SCHEDULED
+  CANCELLED
+}
+
+enum NotificationCategory {
+  TRANSACTIONAL
+  SECURITY
+  SYSTEM
+  MARKETING
+}
+
+enum TemplateStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum Channel {
+  EMAIL
+  PUSH
+  SMS
+  IN_APP
+}
+
+enum Priority {
+  CRITICAL
+  HIGH
+  NORMAL
+  LOW
+}
+
+enum ApiKeyEnv {
+  LIVE
+  TEST
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+enum ScheduledStatus {
+  SCHEDULED
+  PROCESSING
+  DISPATCHED
+  COMPLETED
+  CANCELLED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+model Tenant {
+  id                     String                  @id @default(cuid())
+  name                   String
+  slug                   String                  @unique
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  users                  User[]
+  apiKeys                ApiKey[]
+  notifications          Notification[]
+  templates              NotificationTemplate[]
+  preferences            NotificationPreference[]
+  scheduledNotifications ScheduledNotification[]
+  idempotencyRecords     IdempotencyRecord[]
+  usageRecords           UsageRecord[]
+  inAppNotifications     InAppNotification[]
+  outboxEvents           OutboxEvent[]
+  deadLetterEvents       DeadLetterEvent[]
+  rateLimit              TenantRateLimit?
+  usageQuotaCounters     UsageQuotaCounter[]
+
+  @@map("tenants")
+}
+
+model User {
+  id                 String                   @id @default(cuid())
+  tenantId           String
+  externalId         String
+  email              String?
+  phone              String?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  tenant             Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  devices            Device[]
+  preferences        NotificationPreference[]
+  notifications      Notification[]
+  inAppNotifications InAppNotification[]
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId, email])
+  @@map("users")
+}
+
+model ApiKey {
+  id        String    @id @default(cuid())
+  tenantId  String
+  name      String
+  keyHash   String    @unique
+  prefix    String
+  env       ApiKeyEnv @default(LIVE)
+  revokedAt DateTime?
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("api_keys")
+}
+
+model NotificationTemplate {
+  id              String                        @id @default(cuid())
+  tenantId        String
+  key             String
+  name            String
+  description     String?
+  activeVersionId String?                       @unique
+  createdAt       DateTime                      @default(now())
+  updatedAt       DateTime                      @updatedAt
+
+  tenant          Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  versions        NotificationTemplateVersion[] @relation("TemplateVersions")
+  activeVersion   NotificationTemplateVersion?  @relation("ActiveTemplateVersion", fields: [activeVersionId], references: [id])
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("notification_templates")
+}
+
+model NotificationTemplateVersion {
+  id              String                @id @default(cuid())
+  templateId      String
+  version         Int
+  channel         Channel
+  subject         String?
+  body            String
+  variables       Json                  @default("[]")
+  status          TemplateStatus        @default(DRAFT)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  template        NotificationTemplate  @relation("TemplateVersions", fields: [templateId], references: [id], onDelete: Cascade)
+  activeTemplate  NotificationTemplate? @relation("ActiveTemplateVersion")
+  notifications   Notification[]
+
+  @@unique([templateId, version])
+  @@index([templateId, status])
+  @@map("notification_template_versions")
+}
+
+model NotificationPreference {
+  id        String               @id @default(cuid())
+  tenantId  String
+  userId    String
+  category  NotificationCategory @default(TRANSACTIONAL)
+  channel   Channel
+  enabled   Boolean              @default(true)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId, category, channel])
+  @@index([tenantId, userId])
+  @@map("notification_preferences")
+}
+
+model Device {
+  id        String         @id @default(cuid())
+  tenantId  String
+  userId    String
+  token     String
+  platform  DevicePlatform
+  active    Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, token])
+  @@index([tenantId, userId])
+  @@map("devices")
+}
+
+model Notification {
+  id                    String                       @id @default(cuid())
+  tenantId              String
+  userId                String
+  templateId            String?
+  templateVersionId     String?
+  category              NotificationCategory         @default(TRANSACTIONAL)
+  status                NotificationStatus           @default(PENDING)
+  priority              Priority                     @default(NORMAL)
+  channels              Channel[]
+  payload               Json                         @default("{}")
+  idempotencyKey        String?
+  correlationId         String?
+  scheduledAt           DateTime?
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+
+  tenant                Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                  User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  templateVersion       NotificationTemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: SetNull)
+  deliveries            NotificationDelivery[]
+  retryRecords          RetryRecord[]
+  scheduledNotification ScheduledNotification?
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, userId])
+  @@index([status])
+  @@index([tenantId, createdAt])
+  @@map("notifications")
+}
+
+model NotificationDelivery {
+  id                String             @id @default(cuid())
+  notificationId    String
+  channel           Channel
+  status            NotificationStatus @default(PENDING)
+  attemptCount      Int                @default(0)
+  providerMessageId String?
+  error             String?
+  lastErrorCode     String?
+  lastAttemptAt     DateTime?
+  nextAttemptAt     DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  notification      Notification       @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  retryRecords      RetryRecord[]
+
+  @@index([notificationId, channel])
+  @@index([status])
+  @@index([status, nextAttemptAt])
+  @@map("notification_deliveries")
+}
+
+model ScheduledNotification {
+  id             String          @id @default(cuid())
+  tenantId       String
+  notificationId String          @unique
+  executeAt      DateTime
+  status         ScheduledStatus @default(SCHEDULED)
+  dispatchedAt   DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  notification   Notification    @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([status, executeAt])
+  @@index([tenantId, executeAt, status])
+  @@map("scheduled_notifications")
+}
+
+model IdempotencyRecord {
+  id              String   @id @default(cuid())
+  tenantId        String
+  key             String
+  requestHash     String
+  notificationId  String
+  statusCode      Int      @default(202)
+  responsePayload Json
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@index([tenantId, expiresAt])
+  @@map("idempotency_records")
+}
+
+model RetryRecord {
+  id             String                @id @default(cuid())
+  notificationId String
+  deliveryId     String?
+  attempt        Int
+  error          String
+  nextRetryAt    DateTime?
+  createdAt      DateTime              @default(now())
+
+  notification   Notification          @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  delivery       NotificationDelivery? @relation(fields: [deliveryId], references: [id], onDelete: SetNull)
+
+  @@unique([deliveryId, attempt])
+  @@index([notificationId])
+  @@index([deliveryId])
+  @@map("retry_records")
+}
+
+model DeadLetterEvent {
+  id             String   @id @default(cuid())
+  eventId        String
+  tenantId       String
+  notificationId String
+  deliveryId     String   @unique
+  channel        Channel
+  userId         String
+  attemptCount   Int
+  reason         String
+  errorCode      String?
+  payload        Json
+  createdAt      DateTime @default(now())
+
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([channel, createdAt])
+  @@index([notificationId])
+  @@map("dead_letter_events")
+}
+
+model UsageRecord {
+  id        String   @id @default(cuid())
+  tenantId  String
+  period    String
+  channel   Channel
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, period, channel])
+  @@map("usage_records")
+}
+
+model InAppNotification {
+  id             String    @id @default(cuid())
+  tenantId       String
+  userId         String
+  notificationId String?
+  deliveryId     String?   @unique
+  title          String
+  body           String
+  data           Json?
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId, readAt])
+  @@map("in_app_notifications")
+}
+
+model OutboxEvent {
+  id            String       @id @default(cuid())
+  tenantId      String
+  aggregateType String       @default("NOTIFICATION")
+  aggregateId   String
+  deliveryId    String
+  eventType     String
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  availableAt   DateTime     @default(now())
+  publishedAt   DateTime?
+  lastError     String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  tenant        Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@index([tenantId])
+  @@index([aggregateId])
+  @@index([deliveryId])
+  @@index([createdAt])
+  @@map("outbox_events")
+}
+
+model TenantRateLimit {
+  id                     String   @id @default(cuid())
+  tenantId               String   @unique
+  requestsPerSecond      Int      @default(10)
+  burstCapacity          Int      @default(20)
+  notificationsPerMinute Int      @default(100)
+  notificationsPerDay    Int      @default(10000)
+  enabled                Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  tenant                 Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_rate_limits")
+}
+
+model UsageQuotaCounter {
+  id        String   @id @default(cuid())
+  tenantId  String
+  windowKey String
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, windowKey])
+  @@index([tenantId, windowKey])
+  @@map("usage_quota_counters")
+}
+

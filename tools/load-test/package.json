@@ -1,0 +1,27 @@
+{
+  "name": "@notifyx/load-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@notifyx/config": "workspace:*",
+    "@notifyx/database": "workspace:*",
+    "@notifyx/kafka": "workspace:*",
+    "@notifyx/logger": "workspace:*",
+    "@notifyx/metrics": "workspace:*",
+    "@notifyx/rate-limit": "workspace:*",
+    "@notifyx/shared": "workspace:*",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

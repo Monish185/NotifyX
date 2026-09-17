@@ -1,0 +1,30 @@
+{
+  "name": "@notifyx/sms-worker",
+  "version": "0.1.0",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -b",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@notifyx/config": "workspace:*",
+    "@notifyx/database": "workspace:*",
+    "@notifyx/kafka": "workspace:*",
+    "@notifyx/logger": "workspace:*",
+    "@notifyx/shared": "workspace:*",
+    "dotenv": "^16.4.7",
+    "twilio": "^6.1.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  }
+}

@@ -1,0 +1,45 @@
+# Optional Docker Compose override for Phase 8 resource constraint experiments.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.resource-limits.yml up -d
+
+services:
+  api:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  outbox-publisher:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  email-worker:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  sms-worker:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  push-worker:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  inapp-worker:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M

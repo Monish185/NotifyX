@@ -1,0 +1,36 @@
+{
+  "name": "@notifyx/api",
+  "version": "0.1.0",
+  "main": "./dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -b",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/helmet": "^13.0.1",
+    "@fastify/sensible": "^6.0.3",
+    "@notifyx/config": "workspace:*",
+    "@notifyx/database": "workspace:*",
+    "@notifyx/logger": "workspace:*",
+    "@notifyx/metrics": "workspace:*",
+    "@notifyx/rate-limit": "workspace:*",
+    "@notifyx/shared": "workspace:*",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "ioredis": "^6.0.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/ioredis": "^5.0.0",
+    "@types/node": "^22.13.5",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  }
+}

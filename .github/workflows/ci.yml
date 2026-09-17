@@ -1,0 +1,104 @@
+name: CI — Build, Typecheck & Test
+
+on:
+  pull_request:
+    branches: ['main', 'develop']
+  push:
+    branches: ['main']
+
+env:
+  PNPM_VERSION: '9.15.0'
+  NODE_VERSION: '22'
+
+jobs:
+  ci:
+    name: CI Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm --filter @notifyx/database db:generate
+
+      - name: Typecheck (all packages)
+        run: pnpm typecheck
+
+      - name: Build (all packages)
+        run: pnpm build
+
+      - name: Test (all packages)
+        run: pnpm test
+
+      - name: Validate docker-compose.yml syntax
+        run: docker compose config --quiet
+
+      - name: Validate docker-compose.prod.yml syntax
+        run: docker compose -f docker-compose.prod.yml config --quiet
+
+      - name: Check for accidental secrets in source
+        # Scans for common secret patterns. This is NOT a substitute for proper
+        # secret scanning tools (e.g., GitHub secret scanning, trufflehog).
+        run: |
+          echo "Scanning for accidental secret patterns..."
+          if grep -r --include="*.ts" --include="*.js" --include="*.json" \
+            -E "(password|secret|token|key)\s*=\s*['\"][^'\"]{8,}['\"]" \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.next \
+            --exclude-dir=test --exclude="*.test.ts" --exclude="*.spec.ts" \
+            --exclude=".env.example" --exclude=".env.staging.example" --exclude=".env.production.example" \
+            .; then
+            echo "⚠️  Potential secret patterns found. Review the above matches."
+            # Note: this is informational — some false positives may exist in test fixtures
+          fi
+          echo "Secret scan complete."
+
+  docker-build-validation:
+    name: Docker Image Build Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Only run full Docker build validation on main branch to save CI time
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        run: docker build -f apps/api/Dockerfile -t notifyx-api:ci-test .
+
+      - name: Build Dashboard image
+        run: docker build -f apps/dashboard/Dockerfile -t notifyx-dashboard:ci-test .
+
+      - name: Build Outbox Publisher image
+        run: docker build -f apps/outbox-publisher/Dockerfile -t notifyx-outbox-publisher:ci-test .
+
+      - name: Build In-App Worker image
+        run: docker build -f apps/inapp-worker/Dockerfile -t notifyx-inapp-worker:ci-test .
+
+      - name: Build Email Worker image
+        run: docker build -f apps/email-worker/Dockerfile -t notifyx-email-worker:ci-test .
+
+      - name: Build Push Worker image
+        run: docker build -f apps/push-worker/Dockerfile -t notifyx-push-worker:ci-test .
+
+      - name: Build SMS Worker image
+        run: docker build -f apps/sms-worker/Dockerfile -t notifyx-sms-worker:ci-test .

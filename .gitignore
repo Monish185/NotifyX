@@ -1,0 +1,35 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build outputs
+dist
+build
+.next
+out
+.turbo
+
+# Environment files (Strictly ignore ALL .env files as requested)
+.env
+.env*
+*.env
+*.env.*
+
+# Temporary test artifacts and benchmark results
+artifacts/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Database journals & local state
+*.sqlite
+*.sqlite-journal
+
+# OS & IDE files
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

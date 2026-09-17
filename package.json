@@ -1,0 +1,32 @@
+{
+  "name": "notifyx",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "db:generate": "pnpm --filter @notifyx/database db:generate",
+    "db:migrate": "pnpm --filter @notifyx/database db:migrate",
+    "db:studio": "pnpm --filter @notifyx/database db:studio",
+    "db:deploy": "pnpm --filter @notifyx/database db:deploy",
+    "test:load": "node scripts/run-load-tests.js",
+    "test:failure": "tsx scripts/run-failure-drills.js",
+    "smoke-test": "node scripts/smoke-test.js",
+    "ecr:build": "node scripts/build-and-push-ecr.js",
+    "ecr:push": "node scripts/build-and-push-ecr.js --push",
+    "deploy:staging": "node scripts/deploy-staging.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "kafkajs": "^2.2.4",
+    "tsx": "^4.19.3",
+    "turbo": "^2.4.4",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  }
+}

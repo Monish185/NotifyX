@@ -1,0 +1,46 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'notifyx-api'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['api:3001']
+        labels:
+          service: 'api'
+
+  - job_name: 'notifyx-outbox-publisher'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['outbox-publisher:3002']
+        labels:
+          service: 'outbox-publisher'
+
+  - job_name: 'notifyx-inapp-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['inapp-worker:3003']
+        labels:
+          service: 'inapp-worker'
+
+  - job_name: 'notifyx-email-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['email-worker:3004']
+        labels:
+          service: 'email-worker'
+
+  - job_name: 'notifyx-push-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['push-worker:3005']
+        labels:
+          service: 'push-worker'
+
+  - job_name: 'notifyx-sms-worker'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['sms-worker:3006']
+        labels:
+          service: 'sms-worker'

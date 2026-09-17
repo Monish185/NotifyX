@@ -1,0 +1,342 @@
+# ==============================================================================
+# NotifyX — Production-Oriented AWS Deployment Manifest (docker-compose.prod.yml)
+# Target: Private EC2 Instance behind AWS Application Load Balancer (ALB)
+# ==============================================================================
+# SECURITY INVARIANTS:
+# 1. Zero Direct Public Exposure:
+#    - API and Dashboard bind strictly to localhost (127.0.0.1) or internal bridge.
+#    - Inbound internet traffic arrives ONLY via AWS ALB (TLS terminated on port 443).
+#    - Workers, Publisher, and Kafka have NO public port bindings.
+# 2. Database & Cache:
+#    - In AWS staging/production, PostgreSQL runs on Amazon RDS (Multi-AZ in prod).
+#    - Redis runs on Amazon ElastiCache (Multi-AZ with encryption).
+#    - Connected via VPC private endpoints (DATABASE_URL, REDIS_URL).
+# 3. Kafka:
+#    - In Staging/Portfolio, KRaft Kafka runs as a private container on EC2 with
+#      an attached persistent EBS volume (/var/lib/kafka/data).
+#    - In Enterprise Production, connects to Amazon MSK brokers via KAFKA_BROKERS.
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # Apache Kafka KRaft Broker (Staging Private EC2 Reference)
+  # Uses persistent AWS EBS mount; strictly isolated on internal Docker network.
+  # ----------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: notifyx-prod-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    volumes:
+      # In AWS EC2, map this volume to an attached AWS EBS gp3 volume
+      - kafka_ebs_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # Fastify Notification API
+  # Bound to 127.0.0.1 to accept reverse-proxied traffic from ALB / NGINX only.
+  # ----------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: notifyx-api:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      API_PORT: 3001
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_CLIENT_ID: notifyx-prod-api
+    ports:
+      # Bound strictly to localhost for reverse proxy or ALB target group
+      - "127.0.0.1:${API_PORT:-3001}:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # Transactional Outbox Publisher
+  # Single DB -> Kafka publication bridge. No external host port exposed.
+  # ----------------------------------------------------------------------------
+  outbox-publisher:
+    build:
+      context: .
+      dockerfile: apps/outbox-publisher/Dockerfile
+    image: notifyx-outbox-publisher:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-outbox-publisher
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_CLIENT_ID: notifyx-prod-outbox-publisher
+      PUBLISHER_HEALTH_PORT: 3002
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # In-App Channel Worker
+  # Consumes from Kafka, writes durable in-app notifications to PostgreSQL.
+  # ----------------------------------------------------------------------------
+  inapp-worker:
+    build:
+      context: .
+      dockerfile: apps/inapp-worker/Dockerfile
+    image: notifyx-inapp-worker:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-inapp-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_GROUP_ID: notifyx-inapp-workers
+      KAFKA_CLIENT_ID: notifyx-prod-inapp-worker
+      WORKER_HEALTH_PORT: 3003
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # Email Channel Worker (Amazon SES / Mock)
+  # Dispatches via Amazon SES. Egress via VPC NAT Gateway.
+  # ----------------------------------------------------------------------------
+  email-worker:
+    build:
+      context: .
+      dockerfile: apps/email-worker/Dockerfile
+    image: notifyx-email-worker:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-email-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_GROUP_ID: notifyx-email-workers
+      KAFKA_CLIENT_ID: notifyx-prod-email-worker
+      EMAIL_WORKER_PORT: 3004
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-ses}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      NOTIFYX_RETRY_MAX_ATTEMPTS: ${NOTIFYX_RETRY_MAX_ATTEMPTS:-5}
+      NOTIFYX_RETRY_BASE_DELAY_MS: ${NOTIFYX_RETRY_BASE_DELAY_MS:-5000}
+      NOTIFYX_RETRY_MAX_DELAY_MS: ${NOTIFYX_RETRY_MAX_DELAY_MS:-900000}
+      NOTIFYX_RETRY_JITTER_RATIO: ${NOTIFYX_RETRY_JITTER_RATIO:-0.5}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3004/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # Push Channel Worker (Firebase Cloud Messaging / Mock)
+  # Dispatches via FCM. Egress via VPC NAT Gateway.
+  # ----------------------------------------------------------------------------
+  push-worker:
+    build:
+      context: .
+      dockerfile: apps/push-worker/Dockerfile
+    image: notifyx-push-worker:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-push-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_GROUP_ID: notifyx-push-workers
+      KAFKA_CLIENT_ID: notifyx-prod-push-worker
+      PUSH_WORKER_PORT: 3005
+      PUSH_PROVIDER: ${PUSH_PROVIDER:-fcm}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+      FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL:-}
+      FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY:-}
+      NOTIFYX_RETRY_MAX_ATTEMPTS: ${NOTIFYX_RETRY_MAX_ATTEMPTS:-5}
+      NOTIFYX_RETRY_BASE_DELAY_MS: ${NOTIFYX_RETRY_BASE_DELAY_MS:-5000}
+      NOTIFYX_RETRY_MAX_DELAY_MS: ${NOTIFYX_RETRY_MAX_DELAY_MS:-900000}
+      NOTIFYX_RETRY_JITTER_RATIO: ${NOTIFYX_RETRY_JITTER_RATIO:-0.5}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # SMS Channel Worker (Twilio / Mock)
+  # Dispatches via Twilio REST API. Egress via VPC NAT Gateway.
+  # ----------------------------------------------------------------------------
+  sms-worker:
+    build:
+      context: .
+      dockerfile: apps/sms-worker/Dockerfile
+    image: notifyx-sms-worker:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-sms-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_GROUP_ID: notifyx-sms-workers
+      KAFKA_CLIENT_ID: notifyx-prod-sms-worker
+      SMS_WORKER_PORT: 3006
+      SMS_PROVIDER: ${SMS_PROVIDER:-twilio}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      NOTIFYX_RETRY_MAX_ATTEMPTS: ${NOTIFYX_RETRY_MAX_ATTEMPTS:-5}
+      NOTIFYX_RETRY_BASE_DELAY_MS: ${NOTIFYX_RETRY_BASE_DELAY_MS:-5000}
+      NOTIFYX_RETRY_MAX_DELAY_MS: ${NOTIFYX_RETRY_MAX_DELAY_MS:-900000}
+      NOTIFYX_RETRY_JITTER_RATIO: ${NOTIFYX_RETRY_JITTER_RATIO:-0.5}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3006/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # Notification Scheduler Service
+  # Dispatches due scheduled notifications into transactional outbox.
+  # ----------------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: apps/scheduler/Dockerfile
+    image: notifyx-scheduler:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-scheduler
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      SCHEDULER_HEALTH_PORT: 3007
+      SCHEDULER_POLL_INTERVAL_MS: ${SCHEDULER_POLL_INTERVAL_MS:-1000}
+      SCHEDULER_BATCH_SIZE: ${SCHEDULER_BATCH_SIZE:-50}
+      DATABASE_URL: ${DATABASE_URL}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3007/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # Next.js Operator Dashboard
+  # Bound to 127.0.0.1 to accept reverse-proxied traffic from ALB / NGINX only.
+  # ----------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    image: notifyx-dashboard:${IMAGE_TAG:-latest}
+    container_name: notifyx-prod-dashboard
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-staging}
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    ports:
+      # Bound strictly to localhost for reverse proxy or ALB target group
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
+    networks:
+      - notifyx-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  kafka_ebs_data:
+    driver: local
+
+networks:
+  notifyx-prod-network:
+    driver: bridge
